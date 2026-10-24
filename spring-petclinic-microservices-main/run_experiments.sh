@@ -13,6 +13,7 @@
 # Variáveis de ambiente (todas opcionais):
 #   RUN_TIME=6m            duração de cada execução (formato do Locust)
 #   WARMUP_SECONDS=60      aquecimento descartado das estatísticas
+#   STABILITY_SECONDS=60   tempo de 200s contínuos exigido antes de medir
 #   REPETITIONS=10         repetições por cenário
 #   START_REP=1            primeira repetição (usado pelo run_one.sh)
 #   ONLY=A-Leitura-30      executa somente um cenário
@@ -25,6 +26,10 @@
 #
 # O script é retomável: repetições que já possuem *_stats.csv são puladas,
 # então basta rodar o mesmo comando novamente depois de uma interrupção.
+#
+# O script também sobe a aplicação sozinho: se os containers não estiverem
+# rodando, executa `docker compose up -d` dos serviços usados pelo experimento
+# e espera ficarem estáveis antes de medir.
 # ===========================================================================
 
 set -uo pipefail
@@ -38,6 +43,7 @@ LOCUST="${LOCUST:-$(command -v locust || true)}"
 
 RUN_TIME="${RUN_TIME:-6m}"
 WARMUP_SECONDS="${WARMUP_SECONDS:-60}"
+STABILITY_SECONDS="${STABILITY_SECONDS:-60}"
 REPETITIONS="${REPETITIONS:-10}"
 START_REP="${START_REP:-1}"
 ONLY="${ONLY:-}"
@@ -82,15 +88,29 @@ fi
 # ---------------------------------------------------------------------------
 # Disponibilidade da aplicação
 # ---------------------------------------------------------------------------
-# Após start/reinício o API Gateway responde 405/503 por até ~30 s enquanto
-# o registro Eureka e o circuit breaker se estabilizam. Por isso exigimos uma
-# sequência de respostas 200 (padrão: 8 amostras a cada 2 s = 16 s estável)
-# antes de iniciar a carga.
+# Após start/reinício o API Gateway responde 405/503 enquanto o registro no
+# Eureka é atualizado. O detalhe que quebra a medição: o gateway mantém a
+# lista de instâncias em cache (TTL de ~35 s do Spring Cloud LoadBalancer),
+# então ele pode responder 200 por dezenas de segundos e só depois cair para
+# 405/503 durante uma janela inteira. Esperar apenas alguns segundos, portanto,
+# não basta: a carga começaria dentro dessa janela e a execução inteira seria
+# contaminada por falhas.
+#
+# Critério: exigir STABILITY_SECONDS de respostas 200 contínuas em TODAS as
+# rotas usadas pelos perfis (owners e vets). Qualquer não-200 zera a sequência.
+stability_samples() {
+  local seconds="${1:-${STABILITY_SECONDS}}" interval="${2:-2}"
+  local needed=$(( seconds / interval ))
+  (( needed > 0 )) || needed=1
+  echo "${needed}"
+}
+
 wait_for_app() {
-  local required="${1:-8}" interval="${2:-2}"
-  local streak=0 attempts=0 max_attempts=60
+  local required="${1:-$(stability_samples)}" interval="${2:-2}"
+  local streak=0 attempts=0 max_attempts=$(( (required * 3) + 60 ))
   while (( attempts < max_attempts )); do
-    if curl -sf -o /dev/null --max-time 5 "${BASE_URL}/api/customer/owners" 2>/dev/null; then
+    if curl -sf -o /dev/null --max-time 5 "${BASE_URL}/api/customer/owners" 2>/dev/null &&
+       curl -sf -o /dev/null --max-time 5 "${BASE_URL}/api/vet/vets" 2>/dev/null; then
       streak=$((streak + 1))
       (( streak >= required )) && return 0
     else
@@ -100,6 +120,45 @@ wait_for_app() {
     attempts=$((attempts + 1))
   done
   return 1
+}
+
+# ---------------------------------------------------------------------------
+# Subida da aplicação
+# ---------------------------------------------------------------------------
+# Só os serviços usados pelos perfis de carga (owners e vets). genai-service,
+# admin-server, grafana, prometheus e zipkin ficam de fora: exigem chave da
+# OpenAI ou não participam da medição, e consomem CPU do host.
+APP_SERVICES=(config-server discovery-server customers-service vets-service api-gateway)
+
+container_running() {
+  [[ "$(docker inspect -f '{{.State.Running}}' "$1" 2>/dev/null)" == "true" ]]
+}
+
+app_containers_running() {
+  local c
+  for c in "${APP_SERVICES[@]}"; do
+    container_running "$c" || return 1
+  done
+  return 0
+}
+
+# Garante aplicação no ar e estável. Sobe a stack se necessário.
+ensure_app_ready() {
+  if wait_for_app 3 2; then
+    return 0
+  fi
+
+  if ! app_containers_running; then
+    log "  Aplicação não está no ar; subindo a stack (docker compose up -d)..."
+    if ! ( cd "${PROJECT_DIR}" && docker compose up -d "${APP_SERVICES[@]}" ); then
+      echo "ERRO: falha ao subir a aplicação com docker compose." >&2
+      echo "Verifique 'docker compose ps' e 'docker logs api-gateway'." >&2
+      return 1
+    fi
+  fi
+
+  log "  Aguardando ${STABILITY_SECONDS}s de respostas 200 contínuas (owners + vets)..."
+  wait_for_app
 }
 
 # ---------------------------------------------------------------------------
@@ -152,7 +211,8 @@ reset_state() {
     return 0
   fi
 
-  if ! wait_for_app 8 2; then
+  log "  Aguardando ${STABILITY_SECONDS}s de respostas 200 contínuas (Eureka/LB)..."
+  if ! wait_for_app; then
     warn "aplicação não voltou a responder de forma estável após o reinício"
     return 1
   fi
@@ -248,7 +308,7 @@ if (( TOTAL_PENDING == 0 )); then
   exit 0
 fi
 
-EST_MIN=$(( TOTAL_PENDING * (RUN_SECONDS + 40) / 60 ))
+EST_MIN=$(( TOTAL_PENDING * (RUN_SECONDS + 40 + STABILITY_SECONDS + 20) / 60 ))
 
 log "=== Trabalho 06 — Avaliação de desempenho com Locust ==="
 log "  Host: ${BASE_URL}"
@@ -257,16 +317,15 @@ log "  Tempo estimado: ~$(( EST_MIN / 60 ))h$(( EST_MIN % 60 ))min (inclui reset
 log "  Resultados: ${RESULTS_DIR}"
 log "  Interrompa com Ctrl+C e rode novamente para continuar de onde parou."
 
-if ! wait_for_app 3 2; then
-  echo "ERRO: ${BASE_URL} não está respondendo." >&2
-  echo "Inicie a aplicação antes: docker compose up -d   (ou ./scripts/run_all.sh)" >&2
+if ! ensure_app_ready; then
+  echo "ERRO: ${BASE_URL} não está respondendo de forma estável." >&2
+  echo "Verifique os containers: docker compose ps / docker logs api-gateway" >&2
   exit 1
 fi
 
 for CONTAINER in ${CPU_CONTAINERS}; do
   if ! docker inspect "${CONTAINER}" > /dev/null 2>&1; then
     warn "container '${CONTAINER}' não encontrado: a coleta de CPU ficará vazia."
-    warn "suba a aplicação com 'docker compose up -d' para coletar CPU por serviço."
   fi
 done
 
@@ -323,9 +382,9 @@ for entry in "${SCENARIOS[@]}"; do
       continue
     fi
 
-    if ! wait_for_app 3 2; then
+    if ! ensure_app_ready; then
       echo "ERRO: ${BASE_URL} parou de responder antes de ${RUN_ID}." >&2
-      echo "Reinicie a aplicação e rode este script novamente: ele continua de onde parou." >&2
+      echo "Verifique 'docker compose ps' e rode este script novamente: ele continua de onde parou." >&2
       cleanup
       exit 1
     fi

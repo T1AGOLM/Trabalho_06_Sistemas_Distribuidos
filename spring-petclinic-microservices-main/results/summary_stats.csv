@@ -1,0 +1,7 @@
+scenario,profile,scenario_letter,users,request_count_mean,failure_rate_pct_mean,total_rps_mean,avg_response_time_mean,p95_response_time_mean,p99_response_time_mean,min_response_time_mean,max_response_time_mean,cpu_api-gateway_mean,cpu_customers-service_mean,cpu_vets-service_mean,request_count_std,failure_rate_pct_std,total_rps_std,avg_response_time_std,p95_response_time_std,p99_response_time_std,min_response_time_std,max_response_time_std,cpu_api-gateway_std,cpu_customers-service_std,cpu_vets-service_std
+A-Escrita-30,write,A,30,4378.7,0.0,14.65,41.1,157.0,177.0,4.01,198.63,5.93,71.88,1.45,18.33,0.0,0.06,0.6,4.83,4.83,0.25,7.04,0.35,3.49,0.23
+A-Leitura-30,read,A,30,4434.6,0.0,14.84,26.15,63.1,71.6,4.59,124.27,7.84,39.01,2.6,24.48,0.0,0.08,1.59,3.03,4.17,0.24,56.88,2.35,3.06,1.27
+B-Escrita-80,write,B,80,9913.0,0.0,33.15,427.06,1746.0,2470.0,4.61,3959.87,28.25,702.32,3.97,970.58,0.0,3.23,246.91,887.35,1138.27,0.22,1820.85,3.91,81.33,0.87
+B-Leitura-80,read,B,80,11724.5,0.0,39.21,37.61,105.9,117.0,3.36,138.48,13.49,163.22,2.35,33.7,0.0,0.11,0.93,5.3,6.75,0.18,7.48,0.2,5.54,0.15
+C-Escrita-150,write,C,150,11599.5,0.01,38.73,1841.28,4830.0,5840.0,4.99,9752.66,35.55,1042.71,4.07,157.18,0.01,0.52,52.67,133.75,177.64,0.2,530.61,0.47,8.6,0.29
+C-Leitura-150,read,C,150,19657.3,0.0,65.69,284.91,1139.0,1610.0,4.19,3036.3,39.35,742.25,5.33,1057.52,0.0,3.53,137.99,413.61,650.56,0.53,1441.83,4.12,51.73,0.85

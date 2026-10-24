@@ -53,7 +53,7 @@ O host usado nos testes foi `http://localhost:8080` — o API Gateway. Todas as 
 | CPU | AMD Ryzen 7 5700U — 8 núcleos / 16 threads |
 | Memória RAM | 9,5 GB no total (≈5 GB em uso durante os testes) |
 | Disco / SO | Linux (Arch), Docker 29.9.0, Compose v5.6.0 |
-| Limite por container | `512M` para todos os serviços, exceto `customers-service`, que foi elevado para `1024M` nos cenários de 150 usuários (ver §5.6) |
+| Limite por container | `512M` para todos os serviços, exceto `customers-service`, configurado com `1024M` no `docker-compose.yml` e mantido igual em todos os cenários (ver §5.6) |
 | Gerador de carga | Locust executado no **mesmo host** dos containers (compartilha CPU com os serviços) |
 
 > O Locust roda na mesma máquina que os serviços, então o gerador de carga disputa CPU com a aplicação. Isso é relevante para interpretar os limites observados: o host tem 16 threads e nenhum cenário válido chegou a saturá-las.
@@ -117,12 +117,15 @@ Os experimentos são executados com:
 
 Esse script percorre os 6 cenários (2 perfis × 3 cargas), roda 10 repetições cada via Locust em modo headless e persiste logs, CSVs do Locust e CSVs de CPU em `results/`. O script é **retomável**: repetições que já possuem `_stats.csv` são puladas, então após qualquer interrupção basta rodar o mesmo comando novamente (use `FORCE=1` para refazer).
 
+O script também **sobe a aplicação sozinho**: se os containers não estiverem no ar, executa `docker compose up -d` dos cinco serviços usados pelos perfis (`config-server`, `discovery-server`, `customers-service`, `vets-service`, `api-gateway`) e só inicia a medição depois de `STABILITY_SECONDS` (60 s) de respostas 200 contínuas em `/api/customer/owners` e `/api/vet/vets`.
+
 Parâmetros opcionais (variáveis de ambiente):
 
 | Variável | Padrão | Descrição |
 |----------|--------|-----------|
 | `RUN_TIME` | `6m` | Duração de cada execução |
 | `WARMUP_SECONDS` | `60` | Aquecimento descartado das estatísticas |
+| `STABILITY_SECONDS` | `60` | Tempo de respostas 200 contínuas (owners + vets) exigido antes de cada medição — cobre a janela de cache do gateway após reiniciar o `customers-service` |
 | `REPETITIONS` | `10` | Repetições por cenário |
 | `ONLY` | — | Executa apenas um cenário (ex.: `A-Leitura-30`) |
 | `RESET_STATE` | `1` | Reinicia o `customers-service` entre repetições |
